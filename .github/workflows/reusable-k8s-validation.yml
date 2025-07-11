@@ -31,9 +31,7 @@ on:
         type: string
         default: ""
         description: "Additional schema locations (comma-separated URLs)"
-    secrets:
-      GITHUB_TOKEN:
-        required: true
+    secrets: inherit
 
 jobs:
   kubernetes-validation:

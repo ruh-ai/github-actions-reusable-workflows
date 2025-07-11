@@ -30,9 +30,7 @@ on:
         type: string
         default: "fs,config"
         description: "Types of scans to perform (fs, config, secret)"
-    secrets:
-      GITHUB_TOKEN:
-        required: true
+    secrets: inherit
 
 jobs:
   trivy-security-scan:
