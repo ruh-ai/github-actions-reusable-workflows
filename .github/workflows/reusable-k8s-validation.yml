@@ -31,7 +31,6 @@ on:
         type: string
         default: ""
         description: "Additional schema locations (comma-separated URLs)"
-    secrets: inherit
 
 jobs:
   kubernetes-validation:

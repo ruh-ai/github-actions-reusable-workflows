@@ -30,7 +30,6 @@ on:
         type: string
         default: "fs,config"
         description: "Types of scans to perform (fs, config, secret)"
-    secrets: inherit
 
 jobs:
   trivy-security-scan:
