@@ -1,0 +1,217 @@
+name: Reusable Kubernetes Validation with Kubeconform
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        required: true
+        type: string
+        description: "Name of the service to validate"
+      k8s_manifest_path:
+        required: true
+        type: string
+        description: "Path to Kubernetes manifest files"
+      kubernetes_version:
+        required: false
+        type: string
+        default: "1.28.0"
+        description: "Kubernetes version to validate against"
+      strict_validation:
+        required: false
+        type: boolean
+        default: true
+        description: "Enable strict validation mode"
+      ignore_missing_schemas:
+        required: false
+        type: boolean
+        default: false
+        description: "Ignore missing schemas during validation"
+      additional_schema_locations:
+        required: false
+        type: string
+        default: ""
+        description: "Additional schema locations (comma-separated URLs)"
+    secrets:
+      GITHUB_TOKEN:
+        required: true
+
+jobs:
+  kubernetes-validation:
+    name: Kubernetes Manifest Validation
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Kubeconform
+        run: |
+          KUBECONFORM_VERSION="v0.6.4"
+          curl -L https://github.com/yannh/kubeconform/releases/download/${KUBECONFORM_VERSION}/kubeconform-linux-amd64.tar.gz | tar xz
+          sudo mv kubeconform /usr/local/bin
+
+      - name: Setup kubectl for additional validation
+        uses: azure/setup-kubectl@v3
+        with:
+          version: "v1.28.0"
+
+      - name: Validate Kubernetes manifests with Kubeconform
+        id: kubeconform
+        run: |
+          echo "# Kubernetes Validation Report for ${{ inputs.service_name }}" > validation-report.md
+          echo "" >> validation-report.md
+          echo "## Validation Summary" >> validation-report.md
+          echo "- **Service**: ${{ inputs.service_name }}" >> validation-report.md
+          echo "- **Validation Date**: $(date)" >> validation-report.md
+          echo "- **Kubernetes Version**: ${{ inputs.kubernetes_version }}" >> validation-report.md
+          echo "- **Strict Mode**: ${{ inputs.strict_validation }}" >> validation-report.md
+          echo "" >> validation-report.md
+
+          # Prepare kubeconform command
+          KUBECONFORM_CMD="kubeconform -kubernetes-version ${{ inputs.kubernetes_version }}"
+
+          if [ "${{ inputs.strict_validation }}" = "true" ]; then
+            KUBECONFORM_CMD="$KUBECONFORM_CMD -strict"
+          fi
+
+          if [ "${{ inputs.ignore_missing_schemas }}" = "true" ]; then
+            KUBECONFORM_CMD="$KUBECONFORM_CMD -ignore-missing-schemas"
+          fi
+
+          if [ -n "${{ inputs.additional_schema_locations }}" ]; then
+            IFS=',' read -ra SCHEMAS <<< "${{ inputs.additional_schema_locations }}"
+            for schema in "${SCHEMAS[@]}"; do
+              KUBECONFORM_CMD="$KUBECONFORM_CMD -schema-location $schema"
+            done
+          fi
+
+          # Run validation
+          echo "## Kubeconform Validation Results" >> validation-report.md
+          echo "" >> validation-report.md
+          echo "\`\`\`" >> validation-report.md
+
+          VALIDATION_EXIT_CODE=0
+          if ! $KUBECONFORM_CMD ${{ inputs.k8s_manifest_path }} >> validation-report.md 2>&1; then
+            VALIDATION_EXIT_CODE=1
+          fi
+
+          echo "\`\`\`" >> validation-report.md
+          echo "" >> validation-report.md
+
+          if [ $VALIDATION_EXIT_CODE -eq 0 ]; then
+            echo "✅ **Status**: All manifests are valid" >> validation-report.md
+            echo "validation_status=success" >> $GITHUB_OUTPUT
+          else
+            echo "❌ **Status**: Validation failed" >> validation-report.md
+            echo "validation_status=failed" >> $GITHUB_OUTPUT
+          fi
+
+          echo "exit_code=$VALIDATION_EXIT_CODE" >> $GITHUB_OUTPUT
+
+      - name: Validate with kubectl dry-run
+        id: kubectl-validation
+        run: |
+          echo "" >> validation-report.md
+          echo "## kubectl dry-run Validation" >> validation-report.md
+          echo "" >> validation-report.md
+          echo "\`\`\`" >> validation-report.md
+
+          KUBECTL_EXIT_CODE=0
+          if ! kubectl apply --dry-run=client -f ${{ inputs.k8s_manifest_path }} >> validation-report.md 2>&1; then
+            KUBECTL_EXIT_CODE=1
+          fi
+
+          echo "\`\`\`" >> validation-report.md
+          echo "" >> validation-report.md
+
+          if [ $KUBECTL_EXIT_CODE -eq 0 ]; then
+            echo "✅ **kubectl Status**: Manifests pass dry-run validation" >> validation-report.md
+          else
+            echo "❌ **kubectl Status**: Dry-run validation failed" >> validation-report.md
+          fi
+
+          echo "kubectl_exit_code=$KUBECTL_EXIT_CODE" >> $GITHUB_OUTPUT
+
+      - name: Check for common Kubernetes best practices
+        run: |
+          echo "" >> validation-report.md
+          echo "## Best Practices Check" >> validation-report.md
+          echo "" >> validation-report.md
+
+          # Check for resource limits
+          if grep -q "resources:" ${{ inputs.k8s_manifest_path }}; then
+            echo "✅ Resource limits/requests are defined" >> validation-report.md
+          else
+            echo "⚠️ Consider adding resource limits and requests" >> validation-report.md
+          fi
+
+          # Check for health checks
+          if grep -q "livenessProbe\|readinessProbe" ${{ inputs.k8s_manifest_path }}; then
+            echo "✅ Health checks (probes) are configured" >> validation-report.md
+          else
+            echo "⚠️ Consider adding liveness and readiness probes" >> validation-report.md
+          fi
+
+          # Check for security context
+          if grep -q "securityContext" ${{ inputs.k8s_manifest_path }}; then
+            echo "✅ Security context is configured" >> validation-report.md
+          else
+            echo "⚠️ Consider adding security context for better security" >> validation-report.md
+          fi
+
+          # Check for service account
+          if grep -q "serviceAccountName\|serviceAccount" ${{ inputs.k8s_manifest_path }}; then
+            echo "✅ Service account is specified" >> validation-report.md
+          else
+            echo "⚠️ Consider using a dedicated service account" >> validation-report.md
+          fi
+
+          # Check for labels
+          if grep -q "labels:" ${{ inputs.k8s_manifest_path }}; then
+            echo "✅ Labels are defined for resource organization" >> validation-report.md
+          else
+            echo "⚠️ Consider adding labels for better resource management" >> validation-report.md
+          fi
+
+      - name: Upload validation report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k8s-validation-report-${{ inputs.service_name }}
+          path: validation-report.md
+          retention-days: 30
+
+      - name: Comment PR with validation results
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            if (fs.existsSync('validation-report.md')) {
+              const report = fs.readFileSync('validation-report.md', 'utf8');
+              github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: report
+              });
+            }
+
+      - name: Fail workflow if validation failed
+        if: steps.kubeconform.outputs.validation_status == 'failed' || steps.kubectl-validation.outputs.kubectl_exit_code != '0'
+        run: |
+          echo "Kubernetes manifest validation failed!"
+          exit 1
+
+      - name: Generate validation summary
+        if: always()
+        run: |
+          echo "## Validation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Service**: ${{ inputs.service_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Kubeconform Status**: ${{ steps.kubeconform.outputs.validation_status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **kubectl dry-run**: ${{ steps.kubectl-validation.outputs.kubectl_exit_code == '0' && 'Passed' || 'Failed' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📋 Full validation report available in artifacts." >> $GITHUB_STEP_SUMMARY
